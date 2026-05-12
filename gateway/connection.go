@@ -45,6 +45,8 @@ func (g *GatewaySSEServer) Start(addr string) error {
 	cmd := exec.Command(g.command.Command, g.command.Args...)
 	cmd.Env = append(os.Environ(), g.command.Env...)
 
+	cmd.Stderr = os.Stderr
+
 	if err := g.InitStdioConn(cmd);err != nil {
 		return err
 	}
