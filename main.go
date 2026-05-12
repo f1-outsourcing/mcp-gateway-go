@@ -24,13 +24,13 @@ type Config struct {
 func main() {
 	config := Config{}
 	flag.StringVar(&config.Name, "name", "mcp-gateway-go", "SSE Server name")
-	flag.StringVar(&config.Version, "version", "1.0.0", "SSE Server version")
+	flag.StringVar(&config.Version, "version", "1.0.1", "SSE Server version")
 	flag.IntVar(&config.Port, "port", 7979, "Server listening port")
 	flag.StringVar(&config.BaseURL, "baseUrl", "http://127.0.0.1:7979", "Base URL")
 	flag.StringVar(&config.SSEPath, "ssePath", "/sse", "Base URL for SSE")
 	flag.StringVar(&config.MessagePath, "messagePath", "/messages", "Path for messages")
 	flag.StringVar(&config.Command, "command", "", "Command to run")
-	flag.StringVar(&config.OAuth2Bearer, "oauth2Bearer", "ceshi", "OAuth2 Bearer token")
+	flag.StringVar(&config.OAuth2Bearer, "oauth2Bearer", "", "OAuth2 Bearer token")
 
 	flag.Parse()
 	

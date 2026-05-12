@@ -11,16 +11,19 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
 
 type connection struct {
-	stdin  io.Writer
-	stdout io.Reader
-	mutex  sync.Mutex
-	reader *bufio.Reader
+	stdin io.Writer
+
+	writeMu sync.Mutex
+
+	pendingMu sync.Mutex
+	pending   map[interface{}]chan json.RawMessage
 }
 
 type McpCommand struct {
@@ -66,55 +69,101 @@ func (s *GatewaySSEServer) InitStdioConn(cmd *exec.Cmd) error {
 	}
 
 	s.SSEServer.conn = &connection{
-		stdin:  stdin,
-		stdout: stdout,
+		stdin:   stdin,
+		pending: make(map[interface{}]chan json.RawMessage),
 	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start MCP process: %w", err)
 	}
 
+	go s.readLoop(stdout)
+
 	go func() {
-		cmd.Wait()
-		log.Println("MCP process exited")
+		err := cmd.Wait()
+		log.Printf("MCP process exited: %v", err)
 	}()
 
 	return nil
 }
 
-func (s *SSEServer) forwardToStdio(message json.RawMessage) (json.RawMessage, error) {
-    var msgObj map[string]interface{}
-    if err := json.Unmarshal(message, &msgObj); err == nil {
-        if _, hasID := msgObj["id"]; !hasID {
-            s.conn.mutex.Lock()
-            defer s.conn.mutex.Unlock()
+func (s *GatewaySSEServer) readLoop(stdout io.Reader) {
+	scanner := bufio.NewScanner(stdout)
 
-            if _, err := fmt.Fprintf(s.conn.stdin, "%s\n", message); err != nil {
-                return nil, fmt.Errorf("write notification failed: %w", err)
-            }
-            return nil, nil
-        }
-    }
+	for scanner.Scan() {
+		line := scanner.Bytes()
 
-    s.conn.mutex.Lock()
-    defer s.conn.mutex.Unlock()
+		var raw json.RawMessage
+		raw = append(raw[:0], line...)
 
-    if s.conn.reader == nil {
-        s.conn.reader = bufio.NewReader(s.conn.stdout)
-    }
+		var msg map[string]interface{}
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			log.Printf("invalid MCP json: %s", string(raw))
+			continue
+		}
 
-    if _, err := fmt.Fprintf(s.conn.stdin, "%s\n", message); err != nil {
-        return nil, fmt.Errorf("write request failed: %w", err)
-    }
+		id, hasID := msg["id"]
 
-    line, err := s.conn.reader.ReadBytes('\n')
-    if err != nil {
-        return nil, fmt.Errorf("read response failed: %w", err)
-    }
+		if hasID {
+			s.conn.pendingMu.Lock()
 
-    return json.RawMessage(line), nil
+			ch, ok := s.conn.pending[id]
+			if ok {
+				ch <- raw
+				close(ch)
+				delete(s.conn.pending, id)
+			}
+
+			s.conn.pendingMu.Unlock()
+		} else {
+			log.Printf("notification: %s", string(raw))
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("stdout read error: %v", err)
+	}
 }
 
+func (s *SSEServer) forwardToStdio(message json.RawMessage) (json.RawMessage, error) {
+	var msg map[string]interface{}
+
+	if err := json.Unmarshal(message, &msg); err != nil {
+		return nil, err
+	}
+
+	id, hasID := msg["id"]
+
+	s.conn.writeMu.Lock()
+	defer s.conn.writeMu.Unlock()
+
+	if !hasID {
+		_, err := fmt.Fprintf(s.conn.stdin, "%s\n", message)
+		return nil, err
+	}
+
+	respChan := make(chan json.RawMessage, 1)
+
+	s.conn.pendingMu.Lock()
+	s.conn.pending[id] = respChan
+	s.conn.pendingMu.Unlock()
+
+	if _, err := fmt.Fprintf(s.conn.stdin, "%s\n", message); err != nil {
+		return nil, err
+	}
+
+	select {
+	case resp := <-respChan:
+		return resp, nil
+
+	case <-time.After(60 * time.Second):
+		s.conn.pendingMu.Lock()
+		delete(s.conn.pending, id)
+		s.conn.pendingMu.Unlock()
+
+		return nil, fmt.Errorf("timeout waiting for MCP response")
+	}
+}
 
 func (s *SSEServer) handleMessageToStdio(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
