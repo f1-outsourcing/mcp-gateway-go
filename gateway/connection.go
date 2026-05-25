@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -88,41 +87,34 @@ func (s *GatewaySSEServer) InitStdioConn(cmd *exec.Cmd) error {
 }
 
 func (s *GatewaySSEServer) readLoop(stdout io.Reader) {
-	scanner := bufio.NewScanner(stdout)
+    dec := json.NewDecoder(stdout)
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
+    for {
+        var msg map[string]interface{}
+        if err := dec.Decode(&msg); err != nil {
+            if err == io.EOF {
+                return
+            }
+            log.Printf("stdout decode error: %v", err)
+            return
+        }
 
-		var raw json.RawMessage
-		raw = append(raw[:0], line...)
+        raw, _ := json.Marshal(msg)
 
-		var msg map[string]interface{}
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			log.Printf("invalid MCP json: %s", string(raw))
-			continue
-		}
-
-		id, hasID := msg["id"]
-
-		if hasID {
-			s.conn.pendingMu.Lock()
-
-			ch, ok := s.conn.pending[id]
-			if ok {
-				ch <- raw
-				close(ch)
-				delete(s.conn.pending, id)
-			}
-
-			s.conn.pendingMu.Unlock()
-		} else {
-			log.Printf("notification: %s", string(raw))
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		log.Printf("stdout read error: %v", err)
-	}
+        id, hasID := msg["id"]
+        if hasID {
+            s.conn.pendingMu.Lock()
+            ch, ok := s.conn.pending[id]
+            if ok {
+                ch <- raw
+                close(ch)
+                delete(s.conn.pending, id)
+            }
+            s.conn.pendingMu.Unlock()
+        } else {
+            log.Printf("notification: %s", string(raw))
+        }
+    }
 }
 
 func (s *SSEServer) forwardToStdio(message json.RawMessage) (json.RawMessage, error) {
