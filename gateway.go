@@ -5,6 +5,8 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os/exec"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -21,10 +23,10 @@ func main() {
 		baseURL    string
 	)
 
-	flag.StringVar(&serverPath, "s", "", "Path to stdio MCP server")
+	flag.StringVar(&serverPath, "s", "", "Path to stdio MCP server (with optional args)")
 	flag.StringVar(&port, "p", "8080", "HTTP port")
 	flag.StringVar(&transport, "t", "http", "http | sse")
-	flag.StringVar(&baseURL, "baseUrl", "", "Public base URL for SSE (IMPORTANT for remote clients)")
+	flag.StringVar(&baseURL, "baseUrl", "", "Public base URL for SSE")
 	flag.Parse()
 
 	if serverPath == "" {
@@ -33,15 +35,19 @@ func main() {
 
 	if transport == "sse" && baseURL == "" {
 		log.Println("WARNING: SSE mode without --baseUrl may break remote clients")
-		log.Println("Example: --baseUrl http://192.168.3.11:8080")
 	}
 
 	ctx := context.Background()
 
 	// -------------------------
-	// Start stdio MCP client
+	// Split serverPath into executable + args
 	// -------------------------
-	stdioClient, err := client.NewStdioMCPClient(serverPath, nil)
+	parts := strings.Fields(serverPath)
+	cmdName := parts[0]
+	cmdArgs := parts[1:]
+
+	cmd := exec.Command(cmdName, cmdArgs...)
+	stdioClient, err := client.NewStdioMCPClient(cmd.Path, cmdArgs)
 	if err != nil {
 		log.Fatalf("failed to start stdio client: %v", err)
 	}
@@ -92,21 +98,12 @@ func main() {
 	// Transport switch
 	// -------------------------
 	switch transport {
-
-	// =========================
-	// MODERN MCP HTTP (/mcp)
-	// =========================
 	case "http":
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
-
 		log.Printf("MCP gateway (HTTP) on :%s/mcp", port)
 		log.Fatal(httpServer.Start(":" + port))
 
-	// =========================
-	// LEGACY SSE (/sse + /message)
-	// =========================
 	case "sse":
-
 		if baseURL == "" {
 			baseURL = "http://localhost:" + port
 		}
